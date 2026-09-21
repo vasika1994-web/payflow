@@ -75,57 +75,84 @@ flowchart LR
     consumer -. "попытка 3" .-> dlq[/payments.dlq/]
 ```
 
-- **api** принимает платёж. Платёж и событие пишутся в одной транзакции (outbox),
-  к брокеру api не ходит.
-- **outbox-relay** берёт неопубликованные события (`FOR UPDATE SKIP LOCKED`), публикует
-  с подтверждением брокера и ставит `published_at`.
-- **consumer** обрабатывает по стадиям, глядя на состояние в базе: повтор сообщения
-  не проводит платёж второй раз и не шлёт webhook дважды.
+**api** принимает платёж. Платёж и событие для брокера пишутся в одной транзакции
+(outbox), сам api к RabbitMQ не ходит.
 
-Retry: три попытки с задержками 1 и 2 секунды через очереди с TTL, после третьей
-сообщение уходит в `payments.dlq` с заголовками `x-attempt` и `x-last-error`.
-Отказ шлюза (те самые 10%) не ошибка: платёж становится `failed`, webhook уходит,
-повторов нет. Ретраятся только сбои: шлюз не ответил, база недоступна, webhook не доставлен.
+**outbox-relay** забирает неопубликованные события из таблицы outbox, публикует их
+в RabbitMQ с подтверждением и помечает как опубликованные.
 
-Идемпотентность: `Idempotency-Key` в уникальной колонке, вставка через
-`INSERT ... ON CONFLICT DO NOTHING`. Повтор с тем же телом возвращает тот же платёж
-и `Idempotent-Replayed: true`, с другим телом 409.
+**consumer** обрабатывает платёж по стадиям и смотрит на состояние в базе, поэтому
+повтор сообщения не проводит платёж второй раз и не шлёт webhook дважды.
+
+**Retry и DLQ.** Три попытки с задержками 1 и 2 секунды через очереди с TTL. После
+третьей сообщение уходит в `payments.dlq` с причиной в заголовке `x-last-error`.
+Отказ шлюза (те самые 10%) не считается ошибкой: платёж становится `failed`, клиент
+получает webhook, повторов нет. Повторяются только сбои: шлюз не ответил, база
+недоступна, webhook не доставлен.
+
+**Идемпотентность.** `Idempotency-Key` хранится в уникальной колонке. Повтор запроса
+с тем же телом возвращает тот же платёж и заголовок `Idempotent-Replayed: true`,
+с другим телом отвечает 409.
 
 ## API
 
-Все эндпоинты требуют заголовок `X-API-Key`.
+Все эндпоинты требуют заголовок `X-API-Key`. Полное описание с примерами есть в Swagger.
 
-| | |
-|---|---|
-| `POST /api/v1/payments` | создать платёж, заголовок `Idempotency-Key` обязателен, ответ 202 |
-| `GET /api/v1/payments/{id}` | состояние платежа: `status`, `processed_at`, `webhook_delivered_at`, `failure_reason` |
-| `GET /health` | 200 если база отвечает |
+| Метод | Путь | Что делает |
+|---|---|---|
+| POST | `/api/v1/payments` | Создать платёж. Нужен заголовок `Idempotency-Key`. Ответ 202 |
+| GET | `/api/v1/payments/{id}` | Состояние платежа |
+| GET | `/health` | 200, если база отвечает |
 
-Тело POST: `amount` (decimal > 0, до 2 знаков), `currency` (RUB/USD/EUR), `description`,
-`metadata` (объект), `webhook_url`.
+Тело POST:
 
-Ошибки в едином формате `{"error": {"code": "...", "message": "..."}}`: `unauthorized` 401,
-`idempotency_key_missing` / `idempotency_key_invalid` 400, `idempotency_conflict` 409,
-`validation_failed` 422 (поля в `fields`), `payment_not_found` 404. Подробнее в Swagger.
+| Поле | Тип | Правила |
+|---|---|---|
+| `amount` | decimal | больше 0, не более двух знаков после запятой |
+| `currency` | string | RUB, USD или EUR |
+| `description` | string | необязательно |
+| `metadata` | object | необязательно, любой JSON |
+| `webhook_url` | string | http или https |
 
-Webhook: `POST` на `webhook_url` с телом платежа, заголовки `X-Payment-Id` и `X-Attempt`.
-Доставлено = любой 2xx.
+В ответе GET помимо этих полей приходят `status` (pending / succeeded / failed),
+`processed_at`, `webhook_delivered_at` и `failure_reason`.
+
+Ошибки всегда в одном формате:
+
+```json
+{"error": {"code": "idempotency_conflict", "message": "..."}}
+```
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `unauthorized` | 401 | нет или неверный ключ |
+| `idempotency_key_missing` | 400 | нет заголовка `Idempotency-Key` |
+| `idempotency_key_invalid` | 400 | ключ не по формату |
+| `idempotency_conflict` | 409 | тот же ключ с другим телом |
+| `validation_failed` | 422 | тело не прошло проверку, поля перечислены в `fields` |
+| `payment_not_found` | 404 | нет такого платежа |
+
+Webhook: POST на `webhook_url` с телом платежа. В заголовках `X-Payment-Id` и `X-Attempt`.
+Любой ответ 2xx считается доставкой, всё остальное уходит в retry.
 
 ## Настройки
 
-Переменные окружения, у всех есть дефолты.
+Переменные окружения, у всех есть значения по умолчанию.
 
-| | По умолчанию |
-|---|---|
-| `DATABASE_URL`, `RABBITMQ_URL` | localhost |
-| `API_KEY` | `local-dev-api-key` |
-| `DOCS_PREAUTHORIZE_API_KEY` | `false` (в compose `true`) |
-| `GATEWAY_DELAY_MIN_SECONDS` / `GATEWAY_DELAY_MAX_SECONDS` | 2 / 5 |
-| `GATEWAY_SUCCESS_RATE` | 0.9 |
-| `CONSUMER_MAX_ATTEMPTS` / `RETRY_BASE_DELAY_SECONDS` | 3 / 1 |
-| `WEBHOOK_TIMEOUT_SECONDS` | 5 |
+| Переменная | По умолчанию | Что |
+|---|---|---|
+| `DATABASE_URL` | localhost:5432 | строка подключения к Postgres |
+| `RABBITMQ_URL` | localhost:5672 | строка подключения к RabbitMQ |
+| `API_KEY` | `local-dev-api-key` | ключ для `X-API-Key` |
+| `DOCS_PREAUTHORIZE_API_KEY` | `false` | подставлять ключ в Swagger (в compose включено) |
+| `GATEWAY_DELAY_MIN_SECONDS` | 2 | минимальная задержка шлюза |
+| `GATEWAY_DELAY_MAX_SECONDS` | 5 | максимальная задержка шлюза |
+| `GATEWAY_SUCCESS_RATE` | 0.9 | доля успешных платежей |
+| `CONSUMER_MAX_ATTEMPTS` | 3 | попыток обработки до DLQ |
+| `RETRY_BASE_DELAY_SECONDS` | 1 | первая задержка, дальше удваивается |
+| `WEBHOOK_TIMEOUT_SECONDS` | 5 | таймаут доставки webhook |
 
-С `ENV=production` приложение с дефолтным ключом не стартует.
+С `ENV=production` приложение с ключом по умолчанию не стартует.
 
 ## Тесты
 
