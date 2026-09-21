@@ -23,26 +23,41 @@ docker compose --profile demo up --build
 ## Проверка
 
 ```bash
-bash scripts/demo.sh        # нужен jq
+bash scripts/demo.sh
 ```
 
-Скрипт создаёт платёж, дожидается webhook, затем создаёт платёж с получателем, который
-всегда отвечает 500, и дожидается трёх попыток и сообщения в DLQ.
+Скрипт создаёт платёж и дожидается webhook, потом создаёт платёж с получателем,
+который всегда отвечает 500, и дожидается трёх попыток и сообщения в DLQ. Нужен `jq`.
 
-То же руками:
+Или руками. Создать платёж:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/payments \
-  -H "X-API-Key: local-dev-api-key" -H "Idempotency-Key: order-1042" \
-  -H "Content-Type: application/json" \
-  -d '{"amount": "1500.00", "currency": "RUB", "description": "Заказ #1042",
-       "metadata": {"order_id": 1042}, "webhook_url": "http://webhook-sink:9000/webhook"}'
+     -H "X-API-Key: local-dev-api-key" \
+     -H "Idempotency-Key: order-1042" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "amount": "1500.00",
+           "currency": "RUB",
+           "description": "Заказ #1042",
+           "metadata": {"order_id": 1042},
+           "webhook_url": "http://webhook-sink:9000/webhook"
+         }'
+```
 
-curl http://localhost:8000/api/v1/payments/<payment_id> -H "X-API-Key: local-dev-api-key"
+Через 2-5 секунд посмотреть результат (`payment_id` из ответа):
+
+```bash
+curl http://localhost:8000/api/v1/payments/$PAYMENT_ID -H "X-API-Key: local-dev-api-key"
+```
+
+Что получил клиент:
+
+```bash
 curl http://localhost:9000/received
 ```
 
-Для retry и DLQ укажите `"webhook_url": "http://webhook-sink:9000/fail"`.
+Чтобы увидеть retry и DLQ, в `webhook_url` укажите `http://webhook-sink:9000/fail`.
 
 ## Как устроено
 
