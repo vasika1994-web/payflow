@@ -1,0 +1,103 @@
+# Порядок старта: postgres, rabbitmq -> api (накатывает миграции) -> consumer, outbox-relay.
+# Порты базы и брокера только на 127.0.0.1: docker публикует порты в обход ufw.
+
+x-app-env: &app-env
+  ENV: development
+  LOG_LEVEL: INFO
+  DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/payments
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  API_KEY: local-dev-api-key
+  DOCS_PREAUTHORIZE_API_KEY: "true"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: payments
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # 5433: на 5432 обычно уже есть локальный postgres
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      # -h: по TCP, иначе ready может ответить временный сервер initdb
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d payments"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, urllib.request
+          req = urllib.request.Request("http://127.0.0.1:8000/health", headers={"X-API-Key": os.environ["API_KEY"]})
+          urllib.request.urlopen(req, timeout=3)
+      interval: 5s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  consumer:
+    build: .
+    command: ["faststream", "run", "app.consumer.main:app"]
+    environment:
+      <<: *app-env
+    # шлюз отвечает до 5 секунд, даём дописать результат
+    stop_grace_period: 30s
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  outbox-relay:
+    build: .
+    command: ["python", "-m", "app.outbox.relay"]
+    environment:
+      <<: *app-env
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # docker compose --profile demo up
+  webhook-sink:
+    build: .
+    command: ["uvicorn", "app.tools.webhook_sink:app", "--host", "0.0.0.0", "--port", "9000"]
+    profiles: [demo]
+    ports:
+      - "127.0.0.1:${WEBHOOK_SINK_PORT:-9000}:9000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
