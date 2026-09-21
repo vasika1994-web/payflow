@@ -61,19 +61,18 @@ curl http://localhost:9000/received
 
 ## Как устроено
 
-```
-POST /api/v1/payments ──► payments + outbox (одна транзакция) ──► 202
-                                    │
-                              outbox-relay ──► RabbitMQ payments.new
-                                                      │
-                                                  consumer:
-                                                  1. шлюз (2-5 c, 90% успех)
-                                                  2. статус в базе
-                                                  3. webhook
-                                                      │ ошибка
-                                    retry.1s ◄── попытка 1
-                                    retry.2s ◄── попытка 2
-                                    dlq      ◄── попытка 3
+```mermaid
+flowchart LR
+    client[Клиент] -- "POST /api/v1/payments" --> api
+    api -- "202" --> client
+    api -- "одна транзакция" --> db[("payments + outbox")]
+    relay[outbox-relay] -- "читает outbox" --> db
+    relay -- "publish" --> q[/payments.new/]
+    q --> consumer
+    consumer -- "шлюз, статус, webhook" --> hook[webhook_url]
+    consumer -. "ошибка, попытки 1-2" .-> retry[/"retry.1s, retry.2s (TTL)"/]
+    retry -. "TTL истёк" .-> q
+    consumer -. "попытка 3" .-> dlq[/payments.dlq/]
 ```
 
 - **api** принимает платёж. Платёж и событие пишутся в одной транзакции (outbox),
