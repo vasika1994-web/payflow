@@ -5,7 +5,19 @@
 
 FastAPI, SQLAlchemy 2.0 async, PostgreSQL, RabbitMQ (FastStream), Alembic, Docker Compose.
 
-## Запуск
+## Живой стенд
+
+| | |
+|---|---|
+| Как это работает, на экранах | http://78.17.114.240:8080/pp_1ITlWS36Oh6/kak-eto-rabotaet.html |
+| Swagger | http://78.17.114.240:8002/docs (ключ подставлен; для curl `X-API-Key: rv_f1d3110103b90c319d58c298`) |
+| RabbitMQ: очереди, retry, DLQ | http://78.17.114.240:15673 (reviewer / vfj94brp9FDfu7u1, только просмотр) |
+| Приёмник вебхуков | http://78.17.114.240:9010/received |
+
+В `webhook_url` на стенде указывать `http://78.17.114.240:9010/webhook`,
+для retry и DLQ `http://78.17.114.240:9010/fail`.
+
+## Локальный запуск
 
 ```bash
 docker compose --profile demo up --build
