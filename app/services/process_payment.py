@@ -14,7 +14,7 @@ from enum import StrEnum
 
 from app.core.db import session_scope, transaction
 from app.core.logging import get_logger
-from app.models import Payment, PaymentStatus
+from app.models import PaymentStatus
 from app.repositories.payments import PaymentRepository
 from app.schemas.payments import WebhookPayload
 from app.services.gateway import PaymentGateway
@@ -30,6 +30,7 @@ class PaymentNotFoundError(Exception):
 class Outcome(StrEnum):
     PROCESSED = "processed"
     ALREADY_DONE = "already_done"  # повтор, ничего не менялось
+    TAKEN_OVER = "taken_over"  # платёж параллельно провёл другой consumer
 
 
 @dataclass(slots=True)
@@ -61,16 +62,16 @@ async def process_payment(payment_id: uuid.UUID, *, attempt: int, deps: Processi
                     processed_at=datetime.now(UTC),
                     failure_reason=result.failure_reason,
                 )
-                if not applied:
-                    log.warning("payment.already_finished_elsewhere", payment_id=str(payment.id))
                 await session.refresh(payment)
-            log.info(
-                "payment.gateway_result", payment_id=str(payment.id), status=payment.status, attempt=attempt
-            )
+            if not applied:
+                # тот же платёж обрабатывает другой consumer, webhook тоже за ним
+                log.warning("payment.taken_over", payment_id=str(payment.id))
+                return Outcome.TAKEN_OVER
+            log.info("payment.gateway_result", payment_id=str(payment.id), status=status, attempt=attempt)
             changed = True
 
         if payment.webhook_delivered_at is None:
-            payload = _webhook_payload(payment)
+            payload = WebhookPayload.model_validate(payment, from_attributes=True)
             code = await deps.webhooks.send(payment.webhook_url, payload, attempt=attempt)
             async with transaction(session):
                 await payments.mark_webhook_delivered(payment.id, datetime.now(UTC))
@@ -80,17 +81,3 @@ async def process_payment(payment_id: uuid.UUID, *, attempt: int, deps: Processi
             changed = True
 
         return Outcome.PROCESSED if changed else Outcome.ALREADY_DONE
-
-
-def _webhook_payload(payment: Payment) -> WebhookPayload:
-    return WebhookPayload(
-        payment_id=payment.id,
-        status=payment.status,
-        amount=payment.amount,
-        currency=payment.currency,
-        description=payment.description,
-        metadata=payment.metadata_,
-        failure_reason=payment.failure_reason,
-        created_at=payment.created_at,
-        processed_at=payment.processed_at,
-    )

@@ -34,7 +34,8 @@ async def publish_event(broker: RabbitBroker, event: OutboxEvent) -> None:
         mandatory=True,  # нет очереди - исключение, см. on_return_raises
         timeout=PUBLISH_TIMEOUT_SECONDS,
         message_id=str(event.id),
-        headers={"x-attempt": "1", "x-event-type": event.event_type},
+        message_type=event.event_type,
+        headers={"x-attempt": "1"},
     )
 
 
@@ -43,9 +44,12 @@ async def relay_once(broker: RabbitBroker, settings: Settings) -> int:
     published_ids: list[int] = []
     failed: tuple[int, str] | None = None
 
+    # публикуем под блокировкой строк, поэтому idle-таймаут с запасом на всю пачку
+    idle_timeout_ms = int(settings.outbox_batch_size * PUBLISH_TIMEOUT_SECONDS * 1000) + 5_000
+
     async with session_scope() as session:
         outbox = OutboxRepository(session)
-        async with transaction(session):
+        async with transaction(session, idle_timeout_ms=idle_timeout_ms):
             events = await outbox.lock_unpublished(settings.outbox_batch_size)
             for event in events:
                 try:
@@ -55,9 +59,8 @@ async def relay_once(broker: RabbitBroker, settings: Settings) -> int:
                     break
                 published_ids.append(event.id)
 
-            now = datetime.now(UTC)
-            for event_id in published_ids:
-                await outbox.mark_published(event_id, now)
+            if published_ids:
+                await outbox.mark_published(published_ids, datetime.now(UTC))
 
         if failed is not None:
             event_id, error = failed

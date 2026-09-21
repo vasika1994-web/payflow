@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     env: Literal["development", "test", "production"] = "development"
-    log_level: str = "INFO"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/payments"
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"

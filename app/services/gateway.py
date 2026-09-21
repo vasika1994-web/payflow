@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import uuid
 from dataclasses import dataclass
@@ -29,8 +30,10 @@ class PaymentGateway(Protocol):
 class EmulatedGateway:
     """Эмуляция по ТЗ: 2-5 секунд, 90% успеха.
 
-    Отказ (declined) - штатный исход, платёж станет failed. Недоступность (unavailable_rate,
-    по умолчанию 0) - исключение и retry. payment_id уходит в шлюз как ключ идемпотентности.
+    Исход зависит от payment_id, а не от броска монеты: настоящий шлюз по ключу
+    идемпотентности вернёт тот же результат на повторный запрос, эмулятор тоже.
+    Отказ (declined) - штатный исход, платёж станет failed. Недоступность
+    (unavailable_rate, по умолчанию 0) - исключение и retry.
     """
 
     def __init__(
@@ -52,6 +55,12 @@ class EmulatedGateway:
         await asyncio.sleep(self.rng.uniform(self.delay_min, self.delay_max))
         if self.rng.random() < self.unavailable_rate:
             raise GatewayUnavailableError(f"шлюз не ответил на платёж {payment_id}")
-        if self.rng.random() < self.success_rate:
+        if _roll(payment_id) < self.success_rate:
             return GatewayResult(succeeded=True)
         return GatewayResult(succeeded=False, failure_reason="declined by gateway")
+
+
+def _roll(payment_id: uuid.UUID) -> float:
+    """Число в [0, 1), одно и то же для одного payment_id."""
+    digest = hashlib.sha256(payment_id.bytes).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64

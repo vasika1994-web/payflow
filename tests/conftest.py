@@ -128,12 +128,12 @@ async def create_payment_via_api(client: httpx.AsyncClient, key: str = "key-1", 
 
 
 async def fetch_one(sql: str, **params):
-    async with session_scope() as session:
+    async with session_scope() as session, transaction(session):
         return (await session.execute(text(sql), params)).first()
 
 
 async def scalar(sql: str, **params):
-    async with session_scope() as session:
+    async with session_scope() as session, transaction(session):
         return (await session.execute(text(sql), params)).scalar()
 
 

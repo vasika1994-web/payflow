@@ -44,14 +44,13 @@ async def create_payment(
         currency=data.currency,
         description=data.description,
         metadata=data.metadata,
-        webhook_url=str(data.webhook_url),
+        webhook_url=data.webhook_url,
         idempotency_key=idempotency_key,
         request_hash=fingerprint,
     )
     if payment is not None:
-        await OutboxRepository(session).add(
-            event_type=PAYMENT_CREATED_EVENT,
-            payload={"payment_id": str(payment.id)},
+        OutboxRepository(session).add(
+            event_type=PAYMENT_CREATED_EVENT, payload={"payment_id": str(payment.id)}
         )
         return CreatePaymentResult(payment=payment, replayed=False)
 

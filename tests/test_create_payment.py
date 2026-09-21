@@ -22,6 +22,14 @@ async def test_accepts_payment_and_records_it_as_pending(client):
     assert row.webhook_url == "http://client.example/webhook"
 
 
+async def test_webhook_url_is_stored_as_sent(client):
+    created = await create_payment_via_api(client, "k1", webhook_url="http://client.example")
+
+    response = await client.get(f"/api/v1/payments/{created['payment_id']}")
+
+    assert response.json()["webhook_url"] == "http://client.example"
+
+
 async def test_amount_is_kept_exact(client):
     await create_payment_via_api(client, "s", amount="0.10")
     await create_payment_via_api(client, "n", amount=19.99)
@@ -68,6 +76,10 @@ async def test_get_unknown_payment_is_404(client, payment_id):
         ({"currency": "GBP"}, "currency"),
         ({"webhook_url": "not a url"}, "webhook_url"),
         ({"webhook_url": "ftp://host/x"}, "webhook_url"),
+        ({"webhook_url": "http://localhost:9000/hook"}, "webhook_url"),
+        ({"webhook_url": "http://127.0.0.1/hook"}, "webhook_url"),
+        ({"webhook_url": "http://10.0.0.5/hook"}, "webhook_url"),
+        ({"webhook_url": "http://169.254.169.254/latest/meta-data"}, "webhook_url"),
         ({"metadata": ["list"]}, "metadata"),
         ({"metadata": {"blob": "x" * 20_000}}, "metadata"),
         ({"description": "d" * 1_001}, "description"),

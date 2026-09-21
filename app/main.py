@@ -38,9 +38,8 @@ API_DESCRIPTION = """
 
 ### Аутентификация
 
-Все эндпоинты требуют заголовок `X-API-Key`. Если замок на этой странице уже закрыт,
-ключ подставлен автоматически (настройка `DOCS_PREAUTHORIZE_API_KEY`) и можно сразу
-жать **Try it out**. Иначе нажмите **Authorize** и введите ключ.
+Все эндпоинты требуют заголовок `X-API-Key`. Если замки на ручках уже закрыты, ключ
+подставлен автоматически (`DOCS_PREAUTHORIZE_API_KEY`), иначе нажмите **Authorize**.
 
 ### Ошибки
 
@@ -74,7 +73,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="Процессинг платежей",
+        title="Payflow",
         description=API_DESCRIPTION,
         version="1.0.0",
         lifespan=lifespan,

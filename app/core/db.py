@@ -47,10 +47,13 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 
 @asynccontextmanager
-async def transaction(session: AsyncSession) -> AsyncIterator[AsyncSession]:
+async def transaction(
+    session: AsyncSession, *, idle_timeout_ms: int | None = None
+) -> AsyncIterator[AsyncSession]:
     """Транзакция с таймаутами. Единственный способ открыть транзакцию в проекте.
 
     Внутри блока не должно быть сетевых вызовов: они держат соединение и блокировки.
+    Исключение одно - relay, он публикует под блокировкой строк и передаёт свой idle_timeout_ms.
     """
     settings = get_settings()
     if session.in_transaction():
@@ -60,6 +63,6 @@ async def transaction(session: AsyncSession) -> AsyncIterator[AsyncSession]:
         # SET LOCAL не принимает bind-параметры
         await session.execute(text(f"SET LOCAL statement_timeout = {int(settings.statement_timeout_ms)}"))
         await session.execute(text(f"SET LOCAL lock_timeout = {int(settings.lock_timeout_ms)}"))
-        idle_timeout = int(settings.idle_in_transaction_timeout_ms)
+        idle_timeout = int(idle_timeout_ms or settings.idle_in_transaction_timeout_ms)
         await session.execute(text(f"SET LOCAL idle_in_transaction_session_timeout = {idle_timeout}"))
         yield session

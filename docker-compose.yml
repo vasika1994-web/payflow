@@ -1,5 +1,5 @@
 # Порядок старта: postgres, rabbitmq -> api (накатывает миграции) -> consumer, outbox-relay.
-# Порты базы и брокера только на 127.0.0.1: docker публикует порты в обход ufw.
+# Всё опубликовано только на 127.0.0.1: docker публикует порты в обход ufw, а ключ демонстрационный.
 
 x-app-env: &app-env
   ENV: development
@@ -47,7 +47,7 @@ services:
       <<: *app-env
       RUN_MIGRATIONS: "true"
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
       test:
         - CMD
@@ -74,7 +74,7 @@ services:
     environment:
       <<: *app-env
     # шлюз отвечает до 5 секунд, даём дописать результат
-    stop_grace_period: 30s
+    stop_grace_period: 40s
     depends_on:
       api:
         condition: service_healthy

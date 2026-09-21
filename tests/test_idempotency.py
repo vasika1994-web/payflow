@@ -71,7 +71,7 @@ async def test_malformed_key_is_400(client, key):
     response = await client.post("/api/v1/payments", json=payment_body(), headers={"Idempotency-Key": key})
 
     assert response.status_code == 400
-    assert response.json()["error"]["code"] in {"idempotency_key_invalid", "idempotency_key_missing"}
+    assert response.json()["error"]["code"] == "idempotency_key_invalid"
 
 
 async def test_concurrent_requests_with_same_key_create_one_payment():

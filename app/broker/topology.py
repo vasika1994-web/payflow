@@ -58,13 +58,6 @@ class Topology:
     dlq: RabbitQueue
     retries: tuple[RabbitQueue, ...]  # retries[0] - задержка перед второй попыткой и т.д.
 
-    def retry_for_attempt(self, failed_attempt: int) -> RabbitQueue | None:
-        """None, если попытки кончились."""
-        index = failed_attempt - 1
-        if 0 <= index < len(self.retries):
-            return self.retries[index]
-        return None
-
 
 def build_topology(settings: Settings) -> Topology:
     return Topology(

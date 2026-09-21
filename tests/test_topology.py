@@ -20,19 +20,8 @@ def test_retry_queues_follow_exponential_delays():
         assert queue.arguments["x-dead-letter-routing-key"] == "payments.new"
 
 
-def test_attempt_maps_to_retry_queue_or_dlq():
-    topology = build_topology(Settings(consumer_max_attempts=3))
-
-    assert topology.retry_for_attempt(1).name == "payments.retry.1s"
-    assert topology.retry_for_attempt(2).name == "payments.retry.2s"
-    assert topology.retry_for_attempt(3) is None
-
-
 def test_single_attempt_means_no_retry_queues():
-    topology = build_topology(Settings(consumer_max_attempts=1))
-
-    assert topology.retries == ()
-    assert topology.retry_for_attempt(1) is None
+    assert build_topology(Settings(consumer_max_attempts=1)).retries == ()
 
 
 def test_main_queue_dead_letters_into_dlq():

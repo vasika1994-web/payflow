@@ -33,7 +33,7 @@ router = APIRouter(prefix="/api/v1/payments", tags=["Платежи"], dependenc
         422: {"description": "Тело не прошло валидацию"},
     },
 )
-async def create(
+async def post_payment(
     data: PaymentCreate, idempotency_key: IdempotencyKeyDep, session: SessionDep, response: Response
 ) -> PaymentAccepted:
     try:
@@ -61,7 +61,7 @@ async def create(
         404: {"description": "Платежа с таким id нет"},
     },
 )
-async def get_one(payment_id: str, session: SessionDep) -> PaymentDetails:
+async def get_payment(payment_id: str, session: SessionDep) -> PaymentDetails:
     # невалидный uuid = 404, а не 422
     try:
         parsed = uuid.UUID(payment_id)

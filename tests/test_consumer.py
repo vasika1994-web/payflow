@@ -13,14 +13,13 @@ from app.services.gateway import GatewayUnavailableError
 from app.services.process_payment import ProcessingDeps
 from tests.conftest import FakeGateway, WebhookReceiver, create_payment_via_api, execute, fetch_one
 
-RETRY_1S = "payments.retry.1s"
-RETRY_2S = "payments.retry.2s"
+RETRY_1S, RETRY_2S = consumer.retry_publishers
 
 
 @pytest.fixture
 async def running_consumer():
     async with TestRabbitBroker(consumer.broker) as broker:
-        for publisher in (*consumer.retry_publishers.values(), consumer.dlq_publisher):
+        for publisher in (*consumer.retry_publishers, consumer.dlq_publisher):
             publisher.mock.reset_mock()
         yield broker
 
@@ -69,7 +68,7 @@ async def test_success_updates_status_and_delivers_webhook(client, running_consu
     assert payload["processed_at"] is not None
 
     assert sent_to(consumer.dlq_publisher) is None
-    assert all(sent_to(p) is None for p in consumer.retry_publishers.values())
+    assert all(sent_to(p) is None for p in consumer.retry_publishers)
 
 
 async def test_gateway_decline_is_failed_status_not_retry(client, running_consumer):
@@ -84,7 +83,7 @@ async def test_gateway_decline_is_failed_status_not_retry(client, running_consum
     assert row.failure_reason == "declined by gateway"
     assert row.webhook_delivered_at is not None
     assert json.loads(receiver.requests[0].content)["status"] == "failed"
-    assert all(sent_to(p) is None for p in consumer.retry_publishers.values())
+    assert all(sent_to(p) is None for p in consumer.retry_publishers)
     assert sent_to(consumer.dlq_publisher) is None
 
 
@@ -99,11 +98,11 @@ async def test_webhook_failure_schedules_retry_without_recharging(client, runnin
     assert row.status == "succeeded"
     assert row.webhook_delivered_at is None
 
-    retry = sent_to(consumer.retry_publishers[RETRY_1S])
+    retry = sent_to(RETRY_1S)
     assert retry["payment_id"] == created["payment_id"]
     assert retry["attempt"] == 2
     assert "500" in retry["last_error"]
-    assert sent_to(consumer.retry_publishers[RETRY_2S]) is None
+    assert sent_to(RETRY_2S) is None
     assert sent_to(consumer.dlq_publisher) is None
 
     # вторая попытка: шлюз не трогаем, только webhook
@@ -122,8 +121,8 @@ async def test_second_attempt_failure_goes_to_longer_delay(client, running_consu
 
     await deliver(running_consumer, created["payment_id"], attempt=2)
 
-    assert sent_to(consumer.retry_publishers[RETRY_1S]) is None
-    retry = sent_to(consumer.retry_publishers[RETRY_2S])
+    assert sent_to(RETRY_1S) is None
+    retry = sent_to(RETRY_2S)
     assert retry["attempt"] == 3
     assert "ConnectError" in retry["last_error"]
 
@@ -138,7 +137,7 @@ async def test_last_attempt_failure_goes_to_dlq(client, running_consumer):
     assert dead["payment_id"] == created["payment_id"]
     assert dead["attempt"] == 3
     assert "503" in dead["last_error"]
-    assert all(sent_to(p) is None for p in consumer.retry_publishers.values())
+    assert all(sent_to(p) is None for p in consumer.retry_publishers)
     row = await fetch_one("SELECT status, webhook_delivered_at FROM payments")
     assert (row.status, row.webhook_delivered_at) == ("succeeded", None)
 
@@ -152,7 +151,7 @@ async def test_gateway_outage_is_retried_and_payment_stays_pending(client, runni
 
     assert (await fetch_one("SELECT status FROM payments")).status == "pending"
     assert receiver.requests == []
-    retry = sent_to(consumer.retry_publishers[RETRY_1S])
+    retry = sent_to(RETRY_1S)
     assert retry["attempt"] == 2
     assert "GatewayUnavailableError" in retry["last_error"]
 
@@ -175,12 +174,12 @@ async def test_webhook_timeout_is_a_delivery_error(client, running_consumer):
 
     await deliver(running_consumer, created["payment_id"])
 
-    retry = sent_to(consumer.retry_publishers[RETRY_1S])
+    retry = sent_to(RETRY_1S)
     assert "ReadTimeout" in retry["last_error"]
     assert (await fetch_one("SELECT webhook_delivered_at FROM payments")).webhook_delivered_at is None
 
 
-async def test_redelivered_message_does_not_repeat_finished_stages(client, running_consumer):
+async def test_duplicate_message_does_not_repeat_finished_stages(client, running_consumer):
     created = await create_payment_via_api(client, "k1")
     gateway, receiver = FakeGateway(succeeded=True), WebhookReceiver(200)
     use(gateway, receiver)
@@ -193,7 +192,8 @@ async def test_redelivered_message_does_not_repeat_finished_stages(client, runni
     assert sent_to(consumer.dlq_publisher) is None
 
 
-async def test_payment_finished_elsewhere_is_not_overwritten(client, running_consumer):
+async def test_payment_taken_over_by_other_consumer_is_left_alone(client, running_consumer):
+    # пока шлюз "думал", платёж провёл другой consumer: его результат остаётся, webhook тоже за ним
     created = await create_payment_via_api(client, "k1")
     receiver = WebhookReceiver(200)
 
@@ -211,8 +211,10 @@ async def test_payment_finished_elsewhere_is_not_overwritten(client, running_con
 
     row = await fetch_one("SELECT status, failure_reason, webhook_delivered_at FROM payments")
     assert (row.status, row.failure_reason) == ("failed", "other consumer")
-    assert row.webhook_delivered_at is not None
-    assert json.loads(receiver.requests[0].content)["status"] == "failed"
+    assert row.webhook_delivered_at is None
+    assert receiver.requests == []
+    assert sent_to(consumer.dlq_publisher) is None
+    assert all(sent_to(p) is None for p in consumer.retry_publishers)
 
 
 async def test_unknown_payment_goes_straight_to_dlq(running_consumer):
@@ -224,7 +226,7 @@ async def test_unknown_payment_goes_straight_to_dlq(running_consumer):
     dead = sent_to(consumer.dlq_publisher)
     assert dead["payment_id"] == missing
     assert "PaymentNotFoundError" in dead["last_error"]
-    assert all(sent_to(p) is None for p in consumer.retry_publishers.values())
+    assert all(sent_to(p) is None for p in consumer.retry_publishers)
 
 
 @pytest.mark.parametrize(

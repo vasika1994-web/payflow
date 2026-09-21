@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator
 
 from app.models.enums import Currency, PaymentStatus
 
@@ -16,6 +17,8 @@ from app.models.enums import Currency, PaymentStatus
 MAX_AMOUNT = Decimal("9999999999999.99")
 MAX_DESCRIPTION_LENGTH = 1_000
 MAX_METADATA_BYTES = 16 * 1024
+
+_http_url = TypeAdapter(HttpUrl)
 
 
 class PaymentCreate(BaseModel):
@@ -38,7 +41,17 @@ class PaymentCreate(BaseModel):
     currency: Currency
     description: str = Field(default="", max_length=MAX_DESCRIPTION_LENGTH)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    webhook_url: HttpUrl
+    webhook_url: str = Field(examples=["http://webhook-sink:9000/webhook"])
+
+    @field_validator("webhook_url")
+    @classmethod
+    def check_webhook_url(cls, value: str) -> str:
+        # проверяем через HttpUrl, но храним как прислали: он нормализует адрес
+        url = _http_url.validate_python(value)
+        host = url.host or ""
+        if host == "localhost" or _is_private_ip(host):
+            raise ValueError("webhook_url не может указывать на локальный или внутренний адрес")
+        return value
 
     @field_validator("amount")
     @classmethod
@@ -52,6 +65,14 @@ class PaymentCreate(BaseModel):
         if len(json.dumps(value, ensure_ascii=False).encode()) > MAX_METADATA_BYTES:
             raise ValueError(f"metadata не должно превышать {MAX_METADATA_BYTES} байт в JSON")
         return value
+
+
+def _is_private_ip(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # имя хоста, не IP
+    return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
 class PaymentAccepted(BaseModel):
@@ -80,15 +101,17 @@ class PaymentDetails(BaseModel):
 
 
 class WebhookPayload(BaseModel):
-    """Тело уведомления, которое консьюмер отправляет на webhook_url."""
+    """Тело уведомления на webhook_url."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     event: str = "payment.processed"
-    payment_id: uuid.UUID
+    payment_id: uuid.UUID = Field(validation_alias="id")
     status: PaymentStatus
     amount: Decimal
     currency: Currency
     description: str
-    metadata: dict[str, Any]
+    metadata: dict[str, Any] = Field(validation_alias="metadata_")
     failure_reason: str | None
     created_at: datetime
     processed_at: datetime | None

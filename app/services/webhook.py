@@ -27,6 +27,9 @@ class WebhookSender:
             raise WebhookDeliveryError(f"получатель ответил {response.status_code}")
         return response.status_code
 
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
 
 def make_http_client(
     timeout_seconds: float, transport: httpx.AsyncBaseTransport | None = None
@@ -34,7 +37,7 @@ def make_http_client(
     return httpx.AsyncClient(
         transport=transport,
         timeout=httpx.Timeout(timeout_seconds),
-        headers={"Content-Type": "application/json", "User-Agent": "payment-processing/1.0"},
+        headers={"Content-Type": "application/json", "User-Agent": "payflow/1.0"},
         # шлём ровно на тот адрес, что дал клиент
         follow_redirects=False,
     )

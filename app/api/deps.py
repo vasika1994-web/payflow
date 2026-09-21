@@ -29,7 +29,7 @@ async def require_api_key(api_key: Annotated[str | None, Security(api_key_header
         raise ApiError(status.HTTP_401_UNAUTHORIZED, "unauthorized", "неверный или отсутствующий X-API-Key")
 
 
-IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 
 async def require_idempotency_key(

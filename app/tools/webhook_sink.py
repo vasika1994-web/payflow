@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+KEEP_LAST = 500
+
 app = FastAPI(title="Webhook sink", docs_url=None, redoc_url=None)
 received: list[dict[str, Any]] = []
 
@@ -29,7 +31,7 @@ async def _remember(request: Request, path: str) -> None:
             "body": body,
         },
     )
-    del received[500:]
+    del received[KEEP_LAST:]
 
 
 @app.post("/webhook")

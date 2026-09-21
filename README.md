@@ -88,7 +88,8 @@ flowchart LR
 третьей сообщение уходит в `payments.dlq` с причиной в заголовке `x-last-error`.
 Отказ шлюза (те самые 10%) не считается ошибкой: платёж становится `failed`, клиент
 получает webhook, повторов нет. Повторяются только сбои: шлюз не ответил, база
-недоступна, webhook не доставлен.
+недоступна, webhook не доставлен. Когда причина устранена, `make dlq-replay` возвращает
+сообщения из DLQ в обработку.
 
 **Идемпотентность.** `Idempotency-Key` хранится в уникальной колонке. Повтор запроса
 с тем же телом возвращает тот же платёж и заголовок `Idempotent-Replayed: true`,
@@ -112,7 +113,7 @@ flowchart LR
 | `currency` | string | RUB, USD или EUR |
 | `description` | string | необязательно |
 | `metadata` | object | необязательно, любой JSON |
-| `webhook_url` | string | http или https |
+| `webhook_url` | string | http или https, не localhost и не внутренний IP |
 
 В ответе GET помимо этих полей приходят `status` (pending / succeeded / failed),
 `processed_at`, `webhook_delivered_at` и `failure_reason`.
@@ -131,6 +132,9 @@ flowchart LR
 | `idempotency_conflict` | 409 | тот же ключ с другим телом |
 | `validation_failed` | 422 | тело не прошло проверку, поля перечислены в `fields` |
 | `payment_not_found` | 404 | нет такого платежа |
+| `not_found` | 404 | нет такого пути |
+| `body_too_large` | 413 | тело больше 256 КБ |
+| `internal_error` | 500 | непредвиденный сбой, `X-Request-Id` в заголовке ответа |
 
 Webhook: POST на `webhook_url` с телом платежа. В заголовках `X-Payment-Id` и `X-Attempt`.
 Любой ответ 2xx считается доставкой, всё остальное уходит в retry.
@@ -159,15 +163,16 @@ Webhook: POST на `webhook_url` с телом платежа. В заголов
 ```bash
 pip install -r requirements-dev.txt
 docker compose up -d postgres
-pytest
-ruff check . && alembic check
+make test                # база payments_test создастся сама
+make lint
+make check-migrations
 ```
 
-71 тест на настоящем Postgres, брокер в памяти (`TestRabbitBroker`). Цепочка
+75 тестов на настоящем Postgres, брокер в памяти (`TestRabbitBroker`). Цепочка
 retry → TTL → DLQ на настоящем RabbitMQ проверяется скриптом `scripts/demo.sh`,
 в CI это отдельный job.
 
 ## За рамками
 
-Подпись webhook, защита `webhook_url` от внутренних адресов, чистка таблицы `outbox`,
-метрики.
+Подпись webhook, проверка `webhook_url` по DNS (сейчас отсекаются только адреса, заданные
+IP), чистка таблицы `outbox`, метрики.

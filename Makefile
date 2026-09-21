@@ -1,7 +1,9 @@
 .DEFAULT_GOAL := help
 # порты из .env, те же что у compose
 -include .env
-export
+export POSTGRES_PORT RABBITMQ_PORT RABBITMQ_MANAGEMENT_PORT API_PORT WEBHOOK_SINK_PORT
+POSTGRES_PORT ?= 5433
+TEST_DATABASE_URL ?= postgresql+asyncpg://postgres:password@127.0.0.1:$(POSTGRES_PORT)/payments_test
 .PHONY: help up down logs restart test lint format migrate demo dlq psql clean
 
 help: ## Показать список команд
@@ -25,7 +27,10 @@ restart: ## Пересобрать и перезапустить приложе�
 	docker compose --profile demo up --build -d api consumer outbox-relay webhook-sink
 
 test: ## Прогнать тесты (нужна поднятая база)
-	pytest -v
+	DATABASE_URL=$(TEST_DATABASE_URL) pytest -v
+
+check-migrations: ## Убедиться, что миграции не разошлись с моделями
+	DATABASE_URL=$(TEST_DATABASE_URL) alembic upgrade head && DATABASE_URL=$(TEST_DATABASE_URL) alembic check
 
 lint: ## Проверить стиль и формат
 	ruff check . && ruff format --check .
@@ -38,6 +43,9 @@ migrate: ## Накатить миграции
 
 demo: ## Сквозная проверка: платёж → webhook, платёж → retry → DLQ
 	bash ./scripts/demo.sh
+
+dlq-replay: ## Вернуть сообщения из DLQ в обработку
+	bash ./scripts/dlq_replay.sh
 
 dlq: ## Показать сообщения в DLQ (не забирая их)
 	@curl -s -u guest:guest -X POST "http://localhost:$${RABBITMQ_MANAGEMENT_PORT:-15672}/api/queues/%2F/payments.dlq/get" \

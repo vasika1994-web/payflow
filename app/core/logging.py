@@ -6,11 +6,11 @@ import logging
 import sys
 
 import structlog
+from structlog.typing import FilteringBoundLogger
 
 
 def configure_logging(level: str = "INFO", *, json_output: bool = True) -> None:
-    named = getattr(logging, level.upper(), logging.INFO)
-    resolved_level = named if isinstance(named, int) else logging.INFO
+    resolved_level = logging.getLevelNamesMapping()[level.upper()]
 
     if json_output:
         renderer = structlog.processors.JSONRenderer(ensure_ascii=False)
@@ -50,5 +50,5 @@ def configure_logging(level: str = "INFO", *, json_output: bool = True) -> None:
     )
 
 
-def get_logger(name: str | None = None) -> structlog.BoundLogger:
+def get_logger(name: str | None = None) -> FilteringBoundLogger:
     return structlog.get_logger(name)

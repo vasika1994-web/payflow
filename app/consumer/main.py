@@ -3,6 +3,9 @@
 REJECT_ON_ERROR: вернулись - ack, исключение - reject без requeue, брокер уводит
 сообщение в DLQ. Исключение наружу выходит только если не удалось опубликовать
 retry/DLQ самим handler'ом.
+
+Сообщение: {"payment_id", "attempt", "last_error"}. Попытка и ошибка дублируются
+в заголовках, чтобы их было видно в management UI без разбора тела.
 """
 
 from __future__ import annotations
@@ -12,19 +15,11 @@ from typing import Annotated
 
 import structlog
 from faststream import AckPolicy, Context, ContextRepo, FastStream
-from faststream.rabbit import RabbitBroker, RabbitMessage
+from faststream.rabbit import RabbitMessage
 from pydantic import BaseModel, Field
 
 from app.broker.connection import PUBLISH_TIMEOUT_SECONDS, make_broker
-from app.broker.topology import (
-    DLQ_ROUTING_KEY,
-    DLX_EXCHANGE,
-    NEW_QUEUE,
-    PAYMENTS_EXCHANGE,
-    Topology,
-    build_topology,
-    declare_topology,
-)
+from app.broker.topology import DLX_EXCHANGE, PAYMENTS_EXCHANGE, build_topology, declare_topology
 from app.core.config import get_settings
 from app.core.db import dispose_engine
 from app.core.logging import configure_logging, get_logger
@@ -35,8 +30,8 @@ from app.services.webhook import WebhookSender, make_http_client
 log = get_logger(__name__)
 
 settings = get_settings()
-broker: RabbitBroker = make_broker(settings)
-topology: Topology = build_topology(settings)
+broker = make_broker(settings)
+topology = build_topology(settings)
 app = FastStream(broker)
 
 
@@ -46,9 +41,9 @@ class PaymentMessage(BaseModel):
     last_error: str | None = None
 
 
-# объявлены заранее: попадают в AsyncAPI, в тестах у каждого есть mock
-retry_publishers = {
-    queue.name: broker.publisher(
+# retry_publishers[n] - куда класть сообщение после неудачной попытки n+1
+retry_publishers = [
+    broker.publisher(
         exchange=PAYMENTS_EXCHANGE,
         routing_key=queue.routing_key,
         persist=True,
@@ -56,10 +51,10 @@ retry_publishers = {
         title=f"Повтор через {queue.name.rsplit('.', 1)[-1]}",
     )
     for queue in topology.retries
-}
+]
 dlq_publisher = broker.publisher(
     exchange=DLX_EXCHANGE,
-    routing_key=DLQ_ROUTING_KEY,
+    routing_key=topology.dlq.routing_key,
     persist=True,
     timeout=PUBLISH_TIMEOUT_SECONDS,
     title="Dead letter queue",
@@ -79,15 +74,13 @@ async def startup(context: ContextRepo) -> None:
         webhooks=WebhookSender(make_http_client(settings.webhook_timeout_seconds)),
     )
     context.set_global("deps", deps)
-
-
-@app.after_startup
-async def after_startup() -> None:
+    # retry-очереди должны существовать до первого сообщения
+    await broker.connect()
     await declare_topology(broker, topology)
     log.info(
         "consumer.started",
         max_attempts=settings.consumer_max_attempts,
-        retry_delays=[q.name for q in topology.retries],
+        retry_queues=[q.name for q in topology.retries],
     )
 
 
@@ -95,12 +88,12 @@ async def after_startup() -> None:
 async def shutdown(context: ContextRepo) -> None:
     deps: ProcessingDeps | None = context.get("deps")
     if deps is not None:
-        await deps.webhooks.client.aclose()
+        await deps.webhooks.aclose()
     await dispose_engine()
 
 
 @broker.subscriber(
-    NEW_QUEUE,
+    topology.new,
     PAYMENTS_EXCHANGE,
     ack_policy=AckPolicy.REJECT_ON_ERROR,
     title="Обработка платежа",
@@ -126,20 +119,23 @@ async def handle_new_payment(
 
 
 def effective_attempt(attempt: int, *, redelivered: bool) -> int:
-    # redelivered = процесс упал не подтвердив сообщение; иначе poison message крутился бы вечно
+    # redelivered = процесс упал, не подтвердив сообщение (при этом флаг получат все prefetch'нутые).
+    # Считаем попыткой, иначе poison message крутился бы вечно
     return attempt + 1 if redelivered else attempt
 
 
 async def schedule_retry_or_dlq(body: PaymentMessage, *, attempt: int, error: str) -> None:
-    retry_queue = topology.retry_for_attempt(attempt)
-    if retry_queue is None:
+    index = attempt - 1
+    if index >= len(retry_publishers):
         log.error("payment.attempts_exhausted", error=error, attempts=attempt)
         await send_to_dlq(body, attempt=attempt, error=error)
         return
 
     next_attempt = attempt + 1
-    log.warning("payment.retry_scheduled", error=error, next_attempt=next_attempt, queue=retry_queue.name)
-    await retry_publishers[retry_queue.name].publish(
+    log.warning(
+        "payment.retry_scheduled", error=error, next_attempt=next_attempt, queue=topology.retries[index].name
+    )
+    await retry_publishers[index].publish(
         PaymentMessage(payment_id=body.payment_id, attempt=next_attempt, last_error=error),
         headers={"x-attempt": str(next_attempt), "x-last-error": error},
     )
